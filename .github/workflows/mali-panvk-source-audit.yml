@@ -72,7 +72,18 @@ jobs:
           PY
           ACTUAL_PATCH_SERIES="$(python3 scripts/compute-patch-series-id.py --profile "$PANVK_PROFILE")"
           echo "computed_patch_series=$ACTUAL_PATCH_SERIES"
-          test "$ACTUAL_PATCH_SERIES" = "$EXPECTED_PATCH_SERIES"
+          echo "ACTUAL_PATCH_SERIES=$ACTUAL_PATCH_SERIES" >> "$GITHUB_ENV"
+          if [ "$ACTUAL_PATCH_SERIES" = "$EXPECTED_PATCH_SERIES" ]; then
+            echo "patch_series_identity=verified" >> "$GITHUB_ENV"
+          else
+            echo "patch_series_identity=mismatch" >> "$GITHUB_ENV"
+            {
+              echo "locked=$EXPECTED_PATCH_SERIES"
+              echo "computed=$ACTUAL_PATCH_SERIES"
+              echo "source_commit=$PANVK_SOURCE_REF"
+            } > "$GITHUB_WORKSPACE/audit/patch-series-mismatch.txt"
+            echo "::warning::sources.lock patchSeriesId does not match compute-patch-series-id.py; continuing to test patch applicability"
+          fi
 
       - name: Fetch exact Mesa commit without cloning full history
         run: |
@@ -96,12 +107,23 @@ jobs:
             echo "source_commit=$PANVK_SOURCE_REF"
             echo "mesa_commit=$EXPECTED_MESA_COMMIT"
             echo "profile=$PANVK_PROFILE"
-            echo "patch_series_id=$EXPECTED_PATCH_SERIES"
+            echo "patch_series_id_locked=$EXPECTED_PATCH_SERIES"
+            echo "patch_series_id_computed=$ACTUAL_PATCH_SERIES"
+            echo "patch_series_identity=$patch_series_identity"
             echo "qualification_status=not_device_validated"
             echo "build_status=not_built"
           } > ../audit/provenance.txt
           df -h
           du -sh "$RUNNER_TEMP/mesa-g610" "$GITHUB_WORKSPACE/panvk-source"
+
+      - name: Enforce patch-series identity after applicability check
+        if: success()
+        run: |
+          set -eu
+          test "$ACTUAL_PATCH_SERIES" = "$EXPECTED_PATCH_SERIES" || {
+            echo "FAIL: patch-series digest mismatch; do not build or publish this source pin" >&2
+            exit 1
+          }
 
       - name: Upload source audit evidence
         if: always()
