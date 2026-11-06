@@ -6,7 +6,6 @@ on:
       - feat/panvk-mali-g610-universal
     paths:
       - '.github/workflows/mali-panvk-source-audit.yml'
-      - 'docs/development/panvk-artifact-provenance-audit.md'
       - 'tools/panvk_profile_patch_digest.py'
   workflow_dispatch:
 
