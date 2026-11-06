@@ -32,7 +32,7 @@ Do not conflate these three identities:
 
 These are not interchangeable. The G710 pair's release corresponds to the older GunaCharanTeja source pin, whose lock file declares `2fea...`; the current zenithblue main tree declares `374b...`. The newer README identity also does not establish that the older DroidDeck G710 pair was built from that newer tree.
 
-**Integrity issue found by our CI:** running the pinned GunaCharanTeja commit's own `scripts/compute-patch-series-id.py --profile g610-v10-csf` produced `sha256:bad3cffc8e1229ac8d903c90fc9451694ce04ccb760de393378b5ed02c602c51`, which does not match the `2fea...` value declared in that same commit's `sources.lock`. The immutable source ref, Mesa commit, and G610 profile assertions passed; the first audit run stopped at this digest mismatch before fetching Mesa or attempting patch application. Until the upstream lock/script discrepancy is explained and reconciled, the declared patch-series ID must be treated as unverified and this source pin must not be used for a reproducible release.
+**Integrity issue found by our CI:** running the pinned GunaCharanTeja commit's own `scripts/compute-patch-series-id.py --profile g610-v10-csf` produced `sha256:bad3cffc8e1229ac8d903c90fc9451694ce04ccb760de393378b5ed02c602c51`, which does not match the `2fea...` value declared in that same commit's `sources.lock`. The immutable source ref, Mesa commit, and G610 profile assertions passed. The source-lock history shows its last update was on 2026-10-14, while the selected source ref is later; subsequent patch-series changes are a likely reason for the stale lock value, but this still needs confirmation from upstream history. Until the upstream lock/script discrepancy is explained and reconciled, the declared patch-series ID must be treated as unverified and this source pin must not be used for a reproducible release.
 
 ## Build pipeline findings
 
@@ -123,4 +123,12 @@ Do not equate a developer's available local disk space with GitHub-hosted runner
 - Mesa fetch and patch-application stages: skipped in this first run because the initial workflow version stopped immediately on the mismatch.
 - No driver build was attempted.
 
-The workflow was then adjusted so future runs continue through Mesa fetch and patch applicability while preserving a failing result for the unresolved digest mismatch.
+Second run: https://github.com/kylusm/DroidDeck/actions/runs/42210344262
+- Exact Mesa commit fetch: passed; shallow checkout occupied about 547 MB.
+- PanVK source checkout: about 96 MB.
+- G610 profile patch application: passed, all 20 selected patches applied cleanly to the pinned Mesa commit.
+- Patch-series identity gate: failed, as intended, because the lock value and recomputed digest differ.
+- Runner filesystem after source fetch and patch application: 145 GB total, about 85 GB available. This is a measured snapshot before any full driver build, not a peak-build estimate.
+- No driver binary was compiled.
+
+The workflow now continues through Mesa fetch and patch applicability while preserving a failing result for the unresolved digest mismatch.
