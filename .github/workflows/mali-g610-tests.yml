@@ -57,6 +57,7 @@ jobs:
           set -o pipefail
           ./gradlew :app:testReleaseUnitTest \
             --tests 'com.droiddeck.launcher.gpu.MaliG610PanvkTest' \
+            --tests 'com.droiddeck.launcher.gpu.MaliG610McVariantsTest' \
             --console=plain --stacktrace 2>&1 | tee mali-g610-tests.log
 
       - name: Upload test report
