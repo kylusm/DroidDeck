@@ -42,6 +42,16 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # The app Gradle script checks for all add-on pack files during configuration.
+      # This job only compiles/runs JVM unit tests; it never packages an APK, so
+      # zero-byte placeholders are sufficient and are not valid distributable packs.
+      - name: Satisfy unit-test-only pack configuration
+        run: |
+          mkdir -p app/build/packs
+          for pack in proot directaudio tracking xbox comet butler powervr; do
+            : > "app/build/packs/$pack.tar.zst"
+          done
+
       - name: Run GPU unit tests
         run: |
           set -o pipefail
