@@ -30,7 +30,9 @@ Do not conflate these three identities:
 3. The separate current `zenithblue-oss/panvk-kbase-android` main tree has patch-series ID `sha256:374b7b830111a848515d3e0ec41a60b902bc57938deb420ecea7de8a03f58ecd` in its current `sources.lock`.
 4. The newer upstream README's runtime `driverInfo` example: Mesa 26.3.0-devel, git `795ca7ff3e`, patch marker `p0175`, dated 2026-10-31.
 
-These are not interchangeable. The G710 pair's release corresponds to the older GunaCharanTeja source pin and its `2fea...` patch series, not the current zenithblue main tree's `374b...` series. The newer README identity also does not establish that the older DroidDeck G710 pair was built from that newer tree.
+These are not interchangeable. The G710 pair's release corresponds to the older GunaCharanTeja source pin, whose lock file declares `2fea...`; the current zenithblue main tree declares `374b...`. The newer README identity also does not establish that the older DroidDeck G710 pair was built from that newer tree.
+
+**Integrity issue found by our CI:** running the pinned GunaCharanTeja commit's own `scripts/compute-patch-series-id.py --profile g610-v10-csf` produced `sha256:bad3cffc8e1229ac8d903c90fc9451694ce04ccb760de393378b5ed02c602c51`, which does not match the `2fea...` value declared in that same commit's `sources.lock`. The immutable source ref, Mesa commit, and G610 profile assertions passed; the first audit run stopped at this digest mismatch before fetching Mesa or attempting patch application. Until the upstream lock/script discrepancy is explained and reconciled, the declared patch-series ID must be treated as unverified and this source pin must not be used for a reproducible release.
 
 ## Build pipeline findings
 
@@ -110,3 +112,15 @@ Do not equate a developer's available local disk space with GitHub-hosted runner
 - DroidDeck G710 build workflow: https://github.com/The412Banner/droiddeck-nonadreno-drivers/blob/main/.github/workflows/panvk-mali-g710.yml
 - DroidDeck shared build workflow: https://github.com/The412Banner/droiddeck-nonadreno-drivers/blob/main/.github/workflows/_driver.yml
 - G710 pair release: https://github.com/The412Banner/droiddeck-nonadreno-drivers/releases/tag/panvk-mali-g710
+
+
+## First audit CI run
+
+- Run: https://github.com/kylusm/DroidDeck/actions/runs/42210223461
+- Source checkout: passed at `aa01eb0cd2d5e622ffbaa3a1e097857fe8ed8719`.
+- G610 profile / Mesa commit assertions: passed.
+- Patch-series identity: failed (`2fea...` locked vs `bad3...` recomputed).
+- Mesa fetch and patch-application stages: skipped in this first run because the initial workflow version stopped immediately on the mismatch.
+- No driver build was attempted.
+
+The workflow was then adjusted so future runs continue through Mesa fetch and patch applicability while preserving a failing result for the unresolved digest mismatch.
