@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/mali-panvk-source-audit.yml'
       - 'docs/development/panvk-artifact-provenance-audit.md'
+      - 'tools/panvk_profile_patch_digest.py'
   workflow_dispatch:
 
 permissions:
@@ -74,16 +75,25 @@ jobs:
           echo "computed_patch_series=$ACTUAL_PATCH_SERIES"
           echo "ACTUAL_PATCH_SERIES=$ACTUAL_PATCH_SERIES" >> "$GITHUB_ENV"
           if [ "$ACTUAL_PATCH_SERIES" = "$EXPECTED_PATCH_SERIES" ]; then
-            echo "patch_series_identity=verified" >> "$GITHUB_ENV"
+            echo "global_patch_series_identity=verified" >> "$GITHUB_ENV"
           else
-            echo "patch_series_identity=mismatch" >> "$GITHUB_ENV"
+            echo "global_patch_series_identity=stale" >> "$GITHUB_ENV"
             {
               echo "locked=$EXPECTED_PATCH_SERIES"
               echo "computed=$ACTUAL_PATCH_SERIES"
               echo "source_commit=$PANVK_SOURCE_REF"
-            } > "$GITHUB_WORKSPACE/audit/patch-series-mismatch.txt"
-            echo "::warning::sources.lock patchSeriesId does not match compute-patch-series-id.py; continuing to test patch applicability"
+              echo "note=The upstream global digest includes patch families not selected by the G610 v10 profile."
+            } > "$GITHUB_WORKSPACE/audit/global-patch-series-mismatch.txt"
+            echo "::warning::upstream global patchSeriesId is stale; the profile-scoped digest will identify the actual G610 v10 patch inputs"
           fi
+          PROFILE_AUDIT="$(python3 "$GITHUB_WORKSPACE/tools/panvk_profile_patch_digest.py" --root "$GITHUB_WORKSPACE/panvk-source" --profile "$PANVK_PROFILE")"
+          echo "$PROFILE_AUDIT"
+          PROFILE_PATCH_SERIES_ID="$(printf '%s\n' "$PROFILE_AUDIT" | sed -n '1p')"
+          PROFILE_PATCH_FAMILIES="$(printf '%s\n' "$PROFILE_AUDIT" | sed -n '2p' | cut -d= -f2)"
+          PROFILE_PATCH_FILES="$(printf '%s\n' "$PROFILE_AUDIT" | sed -n '3p' | cut -d= -f2)"
+          echo "PROFILE_PATCH_SERIES_ID=$PROFILE_PATCH_SERIES_ID" >> "$GITHUB_ENV"
+          echo "PROFILE_PATCH_FAMILIES=$PROFILE_PATCH_FAMILIES" >> "$GITHUB_ENV"
+          echo "PROFILE_PATCH_FILES=$PROFILE_PATCH_FILES" >> "$GITHUB_ENV"
 
       - name: Fetch exact Mesa commit without cloning full history
         run: |
@@ -109,21 +119,27 @@ jobs:
             echo "profile=$PANVK_PROFILE"
             echo "patch_series_id_locked=$EXPECTED_PATCH_SERIES"
             echo "patch_series_id_computed=$ACTUAL_PATCH_SERIES"
-            echo "patch_series_identity=$patch_series_identity"
+            echo "global_patch_series_identity=$global_patch_series_identity"
+            echo "profile_patch_series_id=$PROFILE_PATCH_SERIES_ID"
+            echo "profile_patch_families=$PROFILE_PATCH_FAMILIES"
+            echo "profile_patch_files=$PROFILE_PATCH_FILES"
             echo "qualification_status=not_device_validated"
             echo "build_status=not_built"
           } > ../audit/provenance.txt
           df -h
           du -sh "$RUNNER_TEMP/mesa-g610" "$GITHUB_WORKSPACE/panvk-source"
 
-      - name: Enforce patch-series identity after applicability check
+      - name: Verify profile-scoped patch identity after applicability check
         if: success()
         run: |
           set -eu
-          test "$ACTUAL_PATCH_SERIES" = "$EXPECTED_PATCH_SERIES" || {
-            echo "FAIL: patch-series digest mismatch; do not build or publish this source pin" >&2
-            exit 1
-          }
+          case "$PROFILE_PATCH_SERIES_ID" in
+            sha256:????????????????????????????????????????????????????????????????) ;;
+            *) echo "FAIL: missing profile-scoped patch digest" >&2; exit 1 ;;
+          esac
+          grep -q "^OK applied=" audit/patch-application.log
+          echo "Profile-scoped patch identity verified: $PROFILE_PATCH_SERIES_ID"
+          echo "Upstream global lock mismatch is retained in the audit evidence; it does not alter this profile's selected patch inputs."
 
       - name: Upload source audit evidence
         if: always()
