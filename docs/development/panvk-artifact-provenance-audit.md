@@ -132,3 +132,10 @@ Second run: https://github.com/kylusm/DroidDeck/actions/runs/42210344262
 - No driver binary was compiled.
 
 The workflow now continues through Mesa fetch and patch applicability while preserving a failing result for the unresolved digest mismatch.
+
+
+## Profile-scoped identity
+
+The upstream digest helper hashes every patch family in the repository. That is useful as a repository-wide snapshot, but it is not a precise identity for one GPU profile: unrelated v11 patches changed the G610 v10 global digest. DroidDeck now computes a second, profile-scoped digest over the exact family sequence selected for `g610-v10-csf` (`common, android, kbase-common, app-loader, wsi, csf, csf-v10`), including patch files and copied overlay files. This digest is intended for our per-profile build provenance; the upstream global lock value is retained separately as a source-integrity warning.
+
+The profile-scoped digest is calculated by `tools/panvk_profile_patch_digest.py` and emitted in the source-audit artifact. The latest run after adding this tool is tracked here: https://github.com/kylusm/DroidDeck/actions/runs/42210762404. At the time this document was last updated, that run had passed source/profile assertions and was still fetching the pinned Mesa commit; its final result and digest had not yet been confirmed.
