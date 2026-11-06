@@ -88,3 +88,71 @@ calling this test change validated.
   device; Vulkan capabilities must match actual implementation and tests.
 - No copying an old patch into the current tree without checking whether its
   fix is already present in the pinned source.
+
+
+## Update from the 2026-10-07 v10 worklog and later driver notes
+
+The upstream Firebase v10 worklog records a newer G610 MC3 run:
+- beta.18-derived build: PanProbe 36/36 on Mali-G610 MC3 (MT6879, Android 14,
+  Linux 5.10.218, CSF 1.18, 4 KiB pages);
+- the same run passed DXVK, Bachata S4 and vkd3d compliance;
+- BC emulation was enabled with native compressed-format mask
+  `0xc1fe039e`; `KBASE_IOCTL_MEM_ALLOC_EX` returned ENOTTY and fell back
+  to `MEM_ALLOC`; HIDL mapper4 was used and swapchain lifecycle passed.
+This is a concrete G610 validation result, but it is still one kernel/ROM
+combination. The MC4 and MC6 results above remain earlier-build results and
+must not be silently upgraded to beta.18 results.
+
+A later DroidDeck non-Adreno worklog marks the CSF 32-bit address truncation
+bug as fixed across the kbase, G615, G710 and G720 CSF PanVK builds. It was
+found on G720 and ported across the CSF variants. Do not keep this as an
+unfixed G610 issue; still retain a regression test when a device reproducer
+is available.
+
+The Redmi Note 13 Pro+ G610 report remains open: GPU shareability memory
+fault, then queue timeouts; a separate PanVK report recorded CSF fatal error
+`0x88` followed by `VK_ERROR_DEVICE_LOST` after about two minutes. No
+matching upstream fix is recorded. Patch 111 only changes Vulkan SetEvent /
+ResetEvent error reporting after a failed event notification; it does not
+repair an underlying CSF fatal fault or memory shareability violation.
+
+## Patch applicability guardrails
+
+- `csf-v11/108` is the candidate partial-native-BC fix. Its recorded hardware
+  validation is Mali-G57 v9 JM, not G610. The G610 MC3 beta.18 worklog shows
+  BC emulation active and all relevant game checks passing, but the exact
+  source/patch hash must be pinned before deciding whether 108 is already
+  included in a build. Do not reapply it blindly.
+- `csf-v11/110` changes CSF ioctl layouts, page-size handling and
+  MEM_ALLOC_EX fallback. Its hardware validation is JM v9 for shared kmod
+  paths; its CSF paths were not run on hardware in the patch notes. G610 MC3
+  beta.18 confirms MEM_ALLOC_EX ENOTTY fallback to MEM_ALLOC on that device,
+  but does not independently validate every ioctl layout.
+- `csf-v11/111` is Vulkan API error-code hygiene, not a CSF fault fix.
+- `csf-v11/118` adds device, gpu_id, texture-feature and BC-emulation logs.
+  This is useful diagnostic instrumentation and does not change behavior.
+- `csf-v11/186` handles a 40-byte MediaTek SLC PBHA variant of
+  MEM_IMPORT observed on MT6993 / Mali-G1-Ultra v14. It is not a G610 fix.
+  Only consider it for a G610 kernel if logs or headers prove the same
+  extended ioctl layout is present.
+- `profiles/g610-v10-csf.json` still says `planned P24 (not yet validated)`
+  while the v10 worklog contains G610 MC3 validation. Treat the profile
+  status as stale/inconsistent metadata, not as evidence that the MC3 test
+  did not happen.
+
+## Current diagnostic priority for the unresolved Redmi G610 fault
+
+Capture the first fault, not just the eventual queue timeout:
+1. kbase uAPI version, page size, gpu_id/variant and CSF queue-group layout;
+2. first CSF fault status/address and whether the address is truncated;
+3. imported BO attributes and shareability/cacheability flags, including
+   dma-buf exporter/importer memory type and heap;
+4. GPU VA range and page-table mapping around the fault;
+5. queue/group state immediately before and after fatal error 0x88;
+6. whether the failure occurs in the Android WSI/Gralloc path or in a
+   headless/offscreen Vulkan workload.
+
+The previously reported 32-bit VA issue is marked fixed, so the next
+reproducer should explicitly verify the full-width address and then focus on
+shareability and imported-memory attributes. Do not treat a later timeout as
+the root cause if an earlier fault is available.
