@@ -1,0 +1,114 @@
+name: PanVK G610 source and patch audit
+
+on:
+  push:
+    branches:
+      - feat/panvk-mali-g610-universal
+    paths:
+      - '.github/workflows/mali-panvk-source-audit.yml'
+      - 'docs/development/panvk-artifact-provenance-audit.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: panvk-g610-source-audit
+  cancel-in-progress: true
+
+jobs:
+  verify-pinned-source:
+    name: Verify G610 profile, Mesa pin, and patch applicability
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PANVK_SOURCE_REPO: GunaCharanTeja/panvk-kbase-android
+      PANVK_SOURCE_REF: aa01eb0cd2d5e622ffbaa3a1e097857fe8ed8719
+      EXPECTED_MESA_COMMIT: 5a07217f034b3e50d8c7c7794f97a2df1742613b
+      EXPECTED_PATCH_SERIES: sha256:2fead4a864a0ed32f27993c4956736f0ef5ba17d6689429ad9ff232832b2a015
+      PANVK_PROFILE: g610-v10-csf
+    steps:
+      - name: Check out DroidDeck audit definition
+        uses: actions/checkout@v4
+
+      - name: Record runner capacity before source fetch
+        run: |
+          set -eu
+          df -h
+          df -B1 --output=size,used,avail /
+          mkdir -p audit
+          {
+            echo "runner=$(uname -a)"
+            echo "cpu_count=$(nproc)"
+            echo "memory_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)"
+            df -B1 --output=size,used,avail /
+          } > audit/runner-capacity.txt
+
+      - name: Check out immutable PanVK source revision
+        uses: actions/checkout@v4
+        with:
+          repository: GunaCharanTeja/panvk-kbase-android
+          ref: aa01eb0cd2d5e622ffbaa3a1e097857fe8ed8719
+          path: panvk-source
+          persist-credentials: false
+
+      - name: Verify source lock, profile, and patch-series identity
+        working-directory: panvk-source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PANVK_SOURCE_REF"
+          python3 - <<'PY'
+          import json, os
+          lock = json.load(open("sources.lock", encoding="utf-8"))
+          profile = json.load(open(f"profiles/{os.environ['PANVK_PROFILE']}.json", encoding="utf-8"))
+          assert lock["mesaCommit"] == os.environ["EXPECTED_MESA_COMMIT"], lock["mesaCommit"]
+          assert profile["gpu"] == "Mali-G610", profile
+          assert profile["panArch"] == 10 and profile["frontend"] == "CSF", profile
+          assert profile["kernelInterface"] == "mali_kbase", profile
+          assert profile["status"] == "planned P24 (not yet validated)", profile["status"]
+          print("profile_status=" + profile["status"])
+          print("mesa_commit=" + lock["mesaCommit"])
+          print("locked_patch_series=" + lock["patchSeriesId"])
+          PY
+          ACTUAL_PATCH_SERIES="$(python3 scripts/compute-patch-series-id.py --profile "$PANVK_PROFILE")"
+          echo "computed_patch_series=$ACTUAL_PATCH_SERIES"
+          test "$ACTUAL_PATCH_SERIES" = "$EXPECTED_PATCH_SERIES"
+
+      - name: Fetch exact Mesa commit without cloning full history
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mesa-g610"
+          git -C "$RUNNER_TEMP/mesa-g610" init -q
+          git -C "$RUNNER_TEMP/mesa-g610" remote add origin https://gitlab.freedesktop.org/mesa/mesa.git
+          git -C "$RUNNER_TEMP/mesa-g610" fetch --depth=1 origin "$EXPECTED_MESA_COMMIT"
+          git -C "$RUNNER_TEMP/mesa-g610" checkout --detach -q FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/mesa-g610" rev-parse HEAD)" = "$EXPECTED_MESA_COMMIT"
+          echo "mesa_commit=$(git -C "$RUNNER_TEMP/mesa-g610" rev-parse HEAD)" >> "$GITHUB_ENV"
+          du -sh "$RUNNER_TEMP/mesa-g610" panvk-source
+
+      - name: Apply the complete G610 profile patch series
+        working-directory: panvk-source
+        run: |
+          set -euo pipefail
+          ./scripts/apply-patches.sh --profile "$PANVK_PROFILE" --mesa "$RUNNER_TEMP/mesa-g610" | tee ../audit/patch-application.log
+          {
+            echo "source_repo=$PANVK_SOURCE_REPO"
+            echo "source_commit=$PANVK_SOURCE_REF"
+            echo "mesa_commit=$EXPECTED_MESA_COMMIT"
+            echo "profile=$PANVK_PROFILE"
+            echo "patch_series_id=$EXPECTED_PATCH_SERIES"
+            echo "qualification_status=not_device_validated"
+            echo "build_status=not_built"
+          } > ../audit/provenance.txt
+          df -h
+          du -sh "$RUNNER_TEMP/mesa-g610" "$GITHUB_WORKSPACE/panvk-source"
+
+      - name: Upload source audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: panvk-g610-source-audit
+          path: |
+            audit/
+          if-no-files-found: warn
+          retention-days: 30
