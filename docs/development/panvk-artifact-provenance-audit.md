@@ -26,10 +26,11 @@ The matching upstream profile currently describes Mali-G610 / arch v10 / CSF / m
 Do not conflate these three identities:
 
 1. The upstream `sources.lock` Mesa commit: `5a07217f034b3e50d8c7c7794f97a2df1742613b`.
-2. The upstream `sources.lock` patch-series ID: `sha256:374b7b830111a848515d3e0ec41a60b902bc57938deb420ecea7de8a03f58ecd`.
-3. The newer upstream README's runtime `driverInfo` example: Mesa 26.3.0-devel, git `795ca7ff3e`, patch marker `p0175`, dated 2026-10-31.
+2. The **G710 pair's pinned source ref** (`GunaCharanTeja/panvk-kbase-android` at `aa01eb0cd2d5e622ffbaa3a1e097857fe8ed8719`) has patch-series ID `sha256:2fead4a864a0ed32f27993c4956736f0ef5ba17d6689429ad9ff232832b2a015`.
+3. The separate current `zenithblue-oss/panvk-kbase-android` main tree has patch-series ID `sha256:374b7b830111a848515d3e0ec41a60b902bc57938deb420ecea7de8a03f58ecd` in its current `sources.lock`.
+4. The newer upstream README's runtime `driverInfo` example: Mesa 26.3.0-devel, git `795ca7ff3e`, patch marker `p0175`, dated 2026-10-31.
 
-These are not interchangeable. In particular, the newer README identity does not establish that the older DroidDeck G710 pair was built from that newer tree.
+These are not interchangeable. The G710 pair's release corresponds to the older GunaCharanTeja source pin and its `2fea...` patch series, not the current zenithblue main tree's `374b...` series. The newer README identity also does not establish that the older DroidDeck G710 pair was built from that newer tree.
 
 ## Build pipeline findings
 
