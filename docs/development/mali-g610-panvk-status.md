@@ -156,3 +156,40 @@ The previously reported 32-bit VA issue is marked fixed, so the next
 reproducer should explicitly verify the full-width address and then focus on
 shareability and imported-memory attributes. Do not treat a later timeout as
 the root cause if an earlier fault is available.
+
+
+## Upstream snapshot checked 2026-11-06
+
+The current `zenithblue-oss/panvk-kbase-android` main README advertises
+Mesa PanVK v26.3.1 / build 122i as a universal v6-v14 driver, but its current
+tested-device table does **not** list G610; it explicitly says G610, G710,
+G715 and several other models are untested in that release matrix. This is a
+statement about the current universal build, not proof that no G610 testing
+has ever occurred.
+
+The same repository's changelog records earlier G610 evidence on the pinned
+Mesa 26.3.0-devel tree (`5a07217f034b`):
+- beta.18 combined build: G610 MC3 PanProbe 37/37 and PanPlay D3D11 cube;
+- RC3: G610 MC3 PanProbe 38/38, alongside G710/G715 and newer CSF devices;
+- RC3 changelog also records v10 `robustImageAccess2` validation at 38/38.
+
+Therefore the correct status is: **G610 MC3 has prior device validation on
+specific earlier builds, but the current v26.3.1 universal release is not
+listed as G610-tested; G610 MC4/MC6 remain separately unverified on that
+current build.** The standalone `profiles/g610-v10-csf.json` still says
+`planned P24 (not yet validated)`, which conflicts with the historical
+worklog/changelog. Keep both facts visible until upstream reconciles the
+profile metadata. Do not infer MC4/MC6 validation from MC3.
+
+The current README describes BCn emulation and Gralloc support as implemented
+in the universal driver. That does not establish that the old MC4 BC/mapper
+failures reproduce on v26.3.1; they need retesting against the exact binary
+and matching Android/kernel combination. The unresolved DroidDeck G610
+shareability/queue-timeout report remains a separate issue.
+
+Current source identity reported by the release README: Mesa
+26.3.0-devel, git `795ca7ff3e`, patch marker `p0175`, dated 2026-10-31.
+The repository's `sources.lock` still pins Mesa commit
+`5a07217f034b3e50d8c7c7794f97a2df1742613b` with patch-series ID
+`sha256:374b7b830111a848515d3e0ec41a60b902bc57938deb420ecea7de8a03f58ecd`.
+These are different source identities and must not be treated as interchangeable.
