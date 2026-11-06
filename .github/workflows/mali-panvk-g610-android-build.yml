@@ -1,0 +1,255 @@
+name: PanVK G610 Android build (experimental)
+
+on:
+  push:
+    branches:
+      - feat/panvk-mali-g610-universal
+    paths:
+      - '.github/workflows/mali-panvk-g610-android-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: panvk-g610-android-build
+  cancel-in-progress: false
+
+jobs:
+  build-android:
+    name: Build Android kbase ICD for Mali-G610 v10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PANVK_SOURCE_REPO: GunaCharanTeja/panvk-kbase-android
+      PANVK_SOURCE_REF: aa01eb0cd2d5e622ffbaa3a1e097857fe8ed8719
+      DROIDDECK_BUILD_TOOLS_REPO: The412Banner/droiddeck-nonadreno-drivers
+      DROIDDECK_BUILD_TOOLS_REF: 421d99e4ef2b2cf0e2e51728bdc28225fc38c51a
+      MESA_COMMIT: 5a07217f034b3e50d8c7c7794f97a2df1742613b
+      PANVK_PROFILE: g610-v10-csf
+      PROFILE_PATCH_SERIES_ID: sha256:f0500a3ab1376696d9843fbe2d741c2e7409101941f5445f0afa5b1441327449
+    steps:
+      - name: Check out DroidDeck build definition
+        uses: actions/checkout@v4
+
+      - name: Check out pinned PanVK source
+        uses: actions/checkout@v4
+        with:
+          repository: GunaCharanTeja/panvk-kbase-android
+          ref: aa01eb0cd2d5e622ffbaa3a1e097857fe8ed8719
+          path: panvk-source
+          persist-credentials: false
+
+      - name: Check out pinned DroidDeck Android build helpers
+        uses: actions/checkout@v4
+        with:
+          repository: The412Banner/droiddeck-nonadreno-drivers
+          ref: 421d99e4ef2b2cf0e2e51728bdc28225fc38c51a
+          path: dd-build-tools
+          persist-credentials: false
+
+      - name: Install host build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y             ninja-build unzip flex bison cmake glslang-tools curl pkg-config             python3-pip zip patch tar zstd xz-utils libexpat1-dev zlib1g-dev             patchelf gettext-base             libxcb1-dev libx11-dev libx11-xcb-dev libxshmfence-dev             libxcb-randr0-dev libxcb-dri3-dev libxcb-present-dev             libxcb-shm0-dev libxcb-sync-dev libxcb-xfixes0-dev             llvm-18-dev libclang-18-dev libclang-cpp18-dev clang-18             libclc-18-dev libclc-18 libllvmspirvlib-18-dev llvm-spirv-18             spirv-tools libdrm-dev libpolly-18-dev
+          sudo ln -sf /usr/bin/llvm-config-18 /usr/local/bin/llvm-config
+          pip3 install --break-system-packages 'meson>=1.5' mako pyyaml packaging ply pycparser
+          test -n "$ANDROID_NDK_LATEST_HOME"
+          test -f "$ANDROID_NDK_LATEST_HOME/source.properties"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          grep 'Pkg.Revision' "$ANDROID_NDK_LATEST_HOME/source.properties"
+
+      - name: Record initial runner capacity
+        run: |
+          set -euo pipefail
+          mkdir -p audit dist
+          df -h | tee audit/disk-before-build.txt
+          df -B1 --output=size,used,avail / | tee -a audit/disk-before-build.txt
+          {
+            echo "runner=$(uname -a)"
+            echo "cpu_count=$(nproc)"
+            echo "memory_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)"
+            echo "ndk_home=$ANDROID_NDK_HOME"
+            grep 'Pkg.Revision' "$ANDROID_NDK_HOME/source.properties"
+          } > audit/build-environment.txt
+          AVAIL="$(df -B1 --output=avail / | tail -n1 | tr -d ' ')"
+          test "$AVAIL" -gt 30000000000 || {
+            echo "Less than 30 GB free before native build; refusing to start." >&2
+            exit 1
+          }
+
+      - name: Verify immutable inputs and profile-scoped patch identity
+        working-directory: panvk-source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PANVK_SOURCE_REF"
+          python3 - <<'PY'
+          import json, os
+          lock = json.load(open("sources.lock", encoding="utf-8"))
+          profile = json.load(open(f"profiles/{os.environ['PANVK_PROFILE']}.json", encoding="utf-8"))
+          assert lock["mesaCommit"] == os.environ["MESA_COMMIT"], lock["mesaCommit"]
+          assert profile["gpu"] == "Mali-G610", profile
+          assert profile["panArch"] == 10 and profile["frontend"] == "CSF", profile
+          assert profile["kernelInterface"] == "mali_kbase", profile
+          assert profile["status"] == "planned P24 (not yet validated)", profile["status"]
+          PY
+          ACTUAL="$(python3 "$GITHUB_WORKSPACE/tools/panvk_profile_patch_digest.py" --root "$PWD" --profile "$PANVK_PROFILE" | sed -n '1p')"
+          echo "computed_profile_patch_series=$ACTUAL"
+          test "$ACTUAL" = "$PROFILE_PATCH_SERIES_ID"
+          echo "UPSTREAM_LOCK_PATCH_SERIES=$(python3 -c "import json; print(json.load(open('sources.lock'))['patchSeriesId'])")" >> "$GITHUB_ENV"
+          echo "PROFILE_PATCH_SERIES_ID=$ACTUAL" >> "$GITHUB_ENV"
+
+      - name: Build Android side dependencies
+        run: |
+          set -euo pipefail
+          ANDROID_NDK_HOME="$ANDROID_NDK_HOME" ./dd-build-tools/tools/build_android_deps.sh android_deps
+          cp android_deps/libdrm_full.so panvk-source/shims/libdrm.so
+          (cd android_deps && sha256sum *.so) | tee audit/android-dependency-sha256.txt
+          df -h
+
+      - name: Fetch exact Mesa commit and apply G610 profile
+        working-directory: panvk-source
+        run: |
+          set -euo pipefail
+          mkdir -p work/mesa
+          git -C work/mesa init -q
+          git -C work/mesa remote add origin https://gitlab.freedesktop.org/mesa/mesa.git
+          git -C work/mesa fetch --depth=1 origin "$MESA_COMMIT"
+          git -C work/mesa checkout --detach -q FETCH_HEAD
+          test "$(git -C work/mesa rev-parse HEAD)" = "$MESA_COMMIT"
+          ./scripts/apply-patches.sh --profile "$PANVK_PROFILE" --mesa "$PWD/work/mesa" | tee "$GITHUB_WORKSPACE/audit/patch-application.log"
+          grep -q '^OK applied=20 ' "$GITHUB_WORKSPACE/audit/patch-application.log"
+          test "$(git -C work/mesa rev-parse HEAD)" = "$MESA_COMMIT"
+          echo "mesa_version=$(cat work/mesa/VERSION)" >> "$GITHUB_ENV"
+          df -h
+          du -sh work/mesa
+
+      - name: Build native Mesa code-generation tools
+        working-directory: panvk-source
+        run: |
+          set -euo pipefail
+          CC=clang-18 CXX=clang++-18 ./scripts/bootstrap-host-tools.sh --mesa "$PWD/work/mesa" --out "$PWD/build/host-tools"
+          HOST_BIN="$PWD/build/host-tools/bin"
+          ln -sf "$HOST_BIN/mesa_clc" "$HOST_BIN/mesa-clc"
+          ln -sf "$HOST_BIN/vtn_bindgen2" "$HOST_BIN/vtn-bindgen2"
+          {
+            "$HOST_BIN/mesa_clc" --version 2>&1 || true
+            "$HOST_BIN/vtn_bindgen2" --help 2>&1 | head -n 2 || true
+            "$HOST_BIN/panfrost_compile" --help 2>&1 | head -n 2 || true
+          } > "$GITHUB_WORKSPACE/audit/host-tools.txt"
+          df -h
+          du -sh build/host-tools
+
+      - name: Apply the pinned Android-specific CSF overlay
+        working-directory: panvk-source
+        run: |
+          set -euo pipefail
+          OVERLAY="$GITHUB_WORKSPACE/dd-build-tools/patches/panvk_csf_provoking_vertex_u64.py"
+          sha256sum "$OVERLAY" | tee "$GITHUB_WORKSPACE/audit/android-overlay-sha256.txt"
+          python3 "$OVERLAY" "$PWD/work/mesa"
+          ! grep -qE 'uint32_t[[:space:]]+fn_addr' work/mesa/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c
+
+      - name: Cross-compile Android PanVK ICD
+        working-directory: panvk-source
+        env:
+          MESON_WORKING_DIR: ${{ github.workspace }}/panvk-source
+        run: |
+          set -euo pipefail
+          CLANG_LIB_DIR="$(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/lib/clang" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n1)/lib/linux/aarch64"
+          test -d "$CLANG_LIB_DIR"
+          export CLANG_LIB_DIR
+          envsubst < android.toml > android-cross.txt
+          HOST_BIN="$PWD/build/host-tools/bin"
+          export PATH="$HOST_BIN:$PATH"
+          test -x "$HOST_BIN/mesa-clc"
+          test -x "$HOST_BIN/vtn-bindgen2"
+          PKG_CONFIG_LIBDIR="$PWD/shims" meson setup build-android work/mesa --cross-file android-cross.txt             -Dbuildtype=release -Dplatforms=android -Dandroid-stub=true -Dandroid-strict=false             -Dandroid-libbacktrace=disabled -Dplatform-sdk-version=30             -Dglx=disabled -Dgbm=disabled -Degl=disabled -Dopengl=false             -Dgles1=disabled -Dgles2=disabled -Dglvnd=disabled -Dvalgrind=disabled             -Dgallium-drivers= -Dshared-glapi=disabled -Dzstd=disabled             -Dmesa-clc=system -Dprecomp-compiler=system -Dvulkan-drivers=panfrost             -Dllvm=disabled -Dpanfrost-kmds=kbase             2>&1 | tee "$GITHUB_WORKSPACE/audit/meson-setup.log"
+          ninja -j4 -C build-android src/panfrost/vulkan/libvulkan_panfrost.so             2>&1 | tee "$GITHUB_WORKSPACE/audit/ninja-android.log"
+          mkdir -p "$GITHUB_WORKSPACE/dist/android-g610"
+          cp build-android/src/panfrost/vulkan/libvulkan_panfrost.so "$GITHUB_WORKSPACE/dist/android-g610/"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"             "$GITHUB_WORKSPACE/dist/android-g610/libvulkan_panfrost.so"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d             "$GITHUB_WORKSPACE/dist/android-g610/libvulkan_panfrost.so"             | tee "$GITHUB_WORKSPACE/audit/android-needed.txt"
+          file "$GITHUB_WORKSPACE/dist/android-g610/libvulkan_panfrost.so"             | tee "$GITHUB_WORKSPACE/audit/android-file.txt"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" -D             "$GITHUB_WORKSPACE/dist/android-g610/libvulkan_panfrost.so"             | grep -E 'vk_icdGetInstanceProcAddr|vk_icdNegotiateLoaderICDInterfaceVersion'             | tee "$GITHUB_WORKSPACE/audit/android-icd-exports.txt"
+          if "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d               "$GITHUB_WORKSPACE/dist/android-g610/libvulkan_panfrost.so" | grep -q 'libc.so.6'; then
+            echo "Android ICD unexpectedly links against glibc" >&2
+            exit 1
+          fi
+          df -h
+
+      - name: Assemble experimental Android artifact and provenance
+        if: success()
+        working-directory: panvk-source
+        run: |
+          set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/dist/android-g610"
+          mkdir -p "$OUT/deps"
+          cp android_deps/*.so "$OUT/deps/"
+          OVERLAY_SHA="$(awk '{print $1}' "$GITHUB_WORKSPACE/audit/android-overlay-sha256.txt")"
+          LIB_SHA="$(sha256sum "$OUT/libvulkan_panfrost.so" | awk '{print $1}')"
+          NDK_REV="$(sed -n 's/^Pkg.Revision[[:space:]]*=[[:space:]]*//p' "$ANDROID_NDK_HOME/source.properties" | head -n1)"
+          python3 - "$OUT/build-manifest.json" "$LIB_SHA" "$OVERLAY_SHA" "$NDK_REV" <<'PY'
+          import json, os, sys
+          out, lib_sha, overlay_sha, ndk_rev = sys.argv[1:]
+          data = {
+            "schemaVersion": 1,
+            "artifact": "PanVK-Mali-G610-Android-experimental",
+            "status": "built-not-device-validated",
+            "sourceRepository": os.environ["PANVK_SOURCE_REPO"],
+            "sourceCommit": os.environ["PANVK_SOURCE_REF"],
+            "mesaCommit": os.environ["MESA_COMMIT"],
+            "mesaVersion": os.environ.get("mesa_version", "unknown"),
+            "profile": os.environ["PANVK_PROFILE"],
+            "gpuIntent": "Mali-G610, Pan arch v10, CSF, mali_kbase",
+            "profilePatchSeriesId": os.environ["PROFILE_PATCH_SERIES_ID"],
+            "upstreamLockedPatchSeriesId": os.environ["UPSTREAM_LOCK_PATCH_SERIES"],
+            "extraAndroidOverlay": {
+              "repository": os.environ["DROIDDECK_BUILD_TOOLS_REPO"],
+              "commit": os.environ["DROIDDECK_BUILD_TOOLS_REF"],
+              "path": "patches/panvk_csf_provoking_vertex_u64.py",
+              "sha256": overlay_sha
+            },
+            "abi": "arm64-v8a",
+            "androidNdkRevision": ndk_rev,
+            "androidCompileApi": 30,
+            "minimumAndroidApi": 29,
+            "kernelInterface": "mali_kbase",
+            "mesonOptions": [
+              "-Dplatforms=android", "-Dandroid-stub=true", "-Dandroid-strict=false",
+              "-Dplatform-sdk-version=30", "-Dvulkan-drivers=panfrost",
+              "-Dpanfrost-kmds=kbase", "-Dllvm=disabled", "-Dzstd=disabled"
+            ],
+            "library": {
+              "name": "libvulkan_panfrost.so",
+              "sha256": lib_sha
+            },
+            "deviceValidation": "not-run",
+            "limitations": [
+              "Android ICD only; no Linux/glibc runtime half was built",
+              "No Mali-G610 device runtime or Vulkan conformance validation is claimed",
+              "This artifact does not implement or emulate a DRM render node"
+            ],
+            "workflowRunId": os.environ.get("GITHUB_RUN_ID")
+          }
+          json.dump(data, open(out, "w", encoding="utf-8"), indent=2)
+          open(out, "a", encoding="utf-8").write("\n")
+          PY
+          (cd "$OUT" && sha256sum libvulkan_panfrost.so deps/*.so build-manifest.json > SHA256SUMS.txt)
+          (cd "$GITHUB_WORKSPACE" && zip -qr -9 dist/PanVK-Mali-G610-Android-experimental.zip dist/android-g610)
+          sha256sum "$GITHUB_WORKSPACE/dist/PanVK-Mali-G610-Android-experimental.zip"             | tee "$GITHUB_WORKSPACE/audit/package-sha256.txt"
+          df -h | tee "$GITHUB_WORKSPACE/audit/disk-after-build.txt"
+
+      - name: Upload Android build artifact and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: panvk-mali-g610-android-experimental
+          path: |
+            dist/
+            audit/
+            panvk-source/build/android-bionic.log
+            panvk-source/build/host-tools/meson-logs/meson-log.txt
+            panvk-source/build-android/meson-logs/meson-log.txt
+          if-no-files-found: warn
+          retention-days: 30
