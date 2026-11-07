@@ -84,7 +84,7 @@ jobs:
           }
           test "$(git -C panvk-source rev-parse HEAD)" = "$PANVK_SOURCE_REF"
           test "$(git -C dd-build-tools rev-parse HEAD)" = "$DROIDDECK_BUILD_TOOLS_REF"
-          python3 tools/panvk_profile_patch_digest.py --root panvk-source --profile "$PANVK_PROFILE" | tee audit/profile-patch-digest.txt
+          python3 panvk-source/tools/panvk_profile_patch_digest.py --root panvk-source --profile "$PANVK_PROFILE" | tee audit/profile-patch-digest.txt
           grep -Fx "$PROFILE_PATCH_SERIES_ID" audit/profile-patch-digest.txt
           {
             echo "runner=$(uname -a)"
@@ -110,13 +110,18 @@ jobs:
           import pathlib, sys
           p = pathlib.Path(sys.argv[1])
           s = p.read_text()
-          old = '''\tpython3 "$repo/patches/panvk_kbase_drm_node.py" "$mesa" || die "panvk_kbase_drm_node.py failed"
-          \tgrep -q BL_DRM_STANDIN "$mesa/src/panfrost/vulkan/panvk_physical_device.c" || die "DRM-node fix did not land"
-          '''
-          if old not in s:
-              raise SystemExit("expected DRM stand-in injection block not found; refusing unknown helper revision")
-          s = s.replace(old, '\tlog "intentionally skipping fake DRM-node / BL_DRM_STANDIN injection"\n', 1)
-          p.write_text(s)
+          lines = s.splitlines()
+          drm_apply = [i for i, line in enumerate(lines) if 'panvk_kbase_drm_node.py' in line and 'python3 ' in line]
+          drm_assert = [i for i, line in enumerate(lines) if 'grep -q BL_DRM_STANDIN' in line]
+          if len(drm_apply) != 1 or len(drm_assert) != 1:
+              raise SystemExit("expected exactly one DRM stand-in apply/assert pair; refusing unknown helper revision")
+          lines = [line for line in lines if 'panvk_kbase_drm_node.py' not in line and 'grep -q BL_DRM_STANDIN' not in line]
+          marker = 'apply_panvk_fixes(){'
+          if sum(line.strip() == marker for line in lines) != 1:
+              raise SystemExit("apply_panvk_fixes function shape changed")
+          index = next(i for i, line in enumerate(lines) if line.strip() == marker)
+          lines.insert(index + 1, '\tlog "intentionally skipping fake DRM-node / BL_DRM_STANDIN injection"')
+          p.write_text("\\n".join(lines) + "\\n")
           PY
           sha256sum "$SCRIPT" | tee "$GITHUB_WORKSPACE/audit/linux-helper-effective.sha256"
           ! grep -q 'panvk_kbase_drm_node.py' "$SCRIPT"
@@ -191,7 +196,7 @@ jobs:
             "helperOriginalSha256": open("audit/linux-helper-original.sha256").read().split()[0],
             "helperEffectiveSha256": open("audit/linux-helper-effective.sha256").read().split()[0],
             "sysrootPackageListSha256": sha("audit/sysroot-packages.txt"),
-            "sysrootRepositoryDatabasesSha256": sha("audit/arch-arm-database-sha256.txt"),
+            "sysrootRepositoryDatabaseDigestListSha256": sha("audit/arch-arm-database-sha256.txt"),
             "abi": "aarch64-linux-gnu",
             "libc": "glibc",
             "minimumGlibc": meta.get("minGlibc"),
