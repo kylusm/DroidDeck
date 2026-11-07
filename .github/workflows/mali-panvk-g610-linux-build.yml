@@ -1,0 +1,237 @@
+name: PanVK G610 Linux glibc build (experimental)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/panvk-mali-g610-universal
+    paths:
+      - '.github/workflows/mali-panvk-g610-linux-build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: panvk-g610-linux-build
+  cancel-in-progress: false
+
+jobs:
+  build-linux:
+    name: Build ARM64 glibc PanVK kbase ICD for Mali-G610 v10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      PANVK_SOURCE_REPO: GunaCharanTeja/panvk-kbase-android
+      PANVK_SOURCE_REF: aa01eb0cd2d5e622ffbaa3a1e097857fe8ed8719
+      DROIDDECK_BUILD_TOOLS_REPO: The412Banner/droiddeck-nonadreno-drivers
+      DROIDDECK_BUILD_TOOLS_REF: 421d99e4ef2b2cf0e2e51728bdc28225fc38c51a
+      MESA_COMMIT: 5a07217f034b3e50d8c7c7794f97a2df1742613b
+      MESA_OVERLAY_REF: 45ea3ed8ce649d6b72d1843307a29d9cc3b7704e
+      PANVK_PROFILE: g610-v10-csf
+      PROFILE_PATCH_SERIES_ID: sha256:f0500a3ab1376696d9843fbe2d741c2e7409101941f5445f0afa5b1441327449
+      ZIP_NAME: PanVK-Mali-G610-Linux-glibc-experimental.zip
+
+    steps:
+      - name: Check out DroidDeck build definition
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check out pinned PanVK source
+        uses: actions/checkout@v4
+        with:
+          repository: GunaCharanTeja/panvk-kbase-android
+          ref: aa01eb0cd2d5e622ffbaa3a1e097857fe8ed8719
+          path: panvk-source
+          persist-credentials: false
+
+      - name: Check out pinned Linux build helper
+        uses: actions/checkout@v4
+        with:
+          repository: The412Banner/droiddeck-nonadreno-drivers
+          ref: 421d99e4ef2b2cf0e2e51728bdc28225fc38c51a
+          path: dd-build-tools
+          persist-credentials: false
+
+      - name: Install cross-build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build meson flex bison cmake glslang-tools curl pkg-config \
+            python3-pip zip unzip patch tar zstd xz-utils gettext-base \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            libexpat1-dev zlib1g-dev libdrm-dev libxcb1-dev libx11-dev \
+            libx11-xcb-dev libxshmfence-dev libxcb-randr0-dev libxcb-dri3-dev \
+            libxcb-present-dev libxcb-shm0-dev libxcb-sync-dev libxcb-xfixes0-dev \
+            libxext-dev libxfixes-dev libxrandr-dev libwayland-dev wayland-protocols \
+            llvm-18-dev libclang-18-dev libclang-cpp18-dev clang-18 \
+            libclc-18-dev libclc-18 libllvmspirvlib-18-dev llvm-spirv-18 \
+            spirv-tools libpolly-18-dev
+          sudo ln -sf /usr/bin/llvm-config-18 /usr/local/bin/llvm-config
+          pip3 install --break-system-packages 'meson>=1.5' mako pyyaml packaging ply pycparser
+
+      - name: Record runner capacity and immutable input identities
+        run: |
+          set -euo pipefail
+          mkdir -p audit dist
+          df -h | tee audit/disk-before-build.txt
+          df -B1 --output=size,used,avail / | tee -a audit/disk-before-build.txt
+          AVAIL="$(df -B1 --output=avail / | tail -n1 | tr -d ' ')"
+          test "$AVAIL" -gt 30000000000 || {
+            echo "Less than 30 GB free; refusing the cross-build." >&2
+            exit 1
+          }
+          test "$(git -C panvk-source rev-parse HEAD)" = "$PANVK_SOURCE_REF"
+          test "$(git -C dd-build-tools rev-parse HEAD)" = "$DROIDDECK_BUILD_TOOLS_REF"
+          python3 tools/panvk_profile_patch_digest.py --root panvk-source --profile "$PANVK_PROFILE" | tee audit/profile-patch-digest.txt
+          grep -Fx "$PROFILE_PATCH_SERIES_ID" audit/profile-patch-digest.txt
+          {
+            echo "runner=$(uname -a)"
+            echo "cpu_count=$(nproc)"
+            echo "memory_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)"
+            echo "source_repo=$PANVK_SOURCE_REPO"
+            echo "source_commit=$PANVK_SOURCE_REF"
+            echo "mesa_commit=$MESA_COMMIT"
+            echo "mesa_desktop_overlay_ref=$MESA_OVERLAY_REF"
+            echo "helper_repo=$DROIDDECK_BUILD_TOOLS_REPO"
+            echo "helper_commit=$DROIDDECK_BUILD_TOOLS_REF"
+            echo "profile=$PANVK_PROFILE"
+            echo "profile_patch_series=$PROFILE_PATCH_SERIES_ID"
+          } > audit/build-environment.txt
+
+      - name: Prepare Linux helper without DRM stand-in injection
+        working-directory: dd-build-tools
+        run: |
+          set -euo pipefail
+          SCRIPT=build_linux_driver.sh
+          sha256sum "$SCRIPT" | tee "$GITHUB_WORKSPACE/audit/linux-helper-original.sha256"
+          python3 - "$SCRIPT" <<'PY'
+          import pathlib, sys
+          p = pathlib.Path(sys.argv[1])
+          s = p.read_text()
+          old = '''\tpython3 "$repo/patches/panvk_kbase_drm_node.py" "$mesa" || die "panvk_kbase_drm_node.py failed"
+          \tgrep -q BL_DRM_STANDIN "$mesa/src/panfrost/vulkan/panvk_physical_device.c" || die "DRM-node fix did not land"
+          '''
+          if old not in s:
+              raise SystemExit("expected DRM stand-in injection block not found; refusing unknown helper revision")
+          s = s.replace(old, '\tlog "intentionally skipping fake DRM-node / BL_DRM_STANDIN injection"\n', 1)
+          p.write_text(s)
+          PY
+          sha256sum "$SCRIPT" | tee "$GITHUB_WORKSPACE/audit/linux-helper-effective.sha256"
+          ! grep -q 'panvk_kbase_drm_node.py' "$SCRIPT"
+          ! grep -q 'BL_DRM_STANDIN' "$SCRIPT"
+
+      - name: Build ARM64 glibc PanVK ICD
+        working-directory: dd-build-tools
+        env:
+          DRIVER: panvk
+          SRC_KIND: patchset
+          SRC_REPO: GunaCharanTeja/panvk-kbase-android
+          SRC_REF: aa01eb0cd2d5e622ffbaa3a1e097857fe8ed8719
+          PROFILE: g610-v10-csf
+          PANFROST_KMDS: kbase
+          MESA_OVERLAY_REF: 45ea3ed8ce649d6b72d1843307a29d9cc3b7704e
+          ZIP_NAME: PanVK-Mali-G610-Linux-glibc-experimental.zip
+          META_NAME: PanVK Mali-G610 Linux glibc experimental
+        run: |
+          set -euo pipefail
+          bash ./build_linux_driver.sh 2>&1 | tee "$GITHUB_WORKSPACE/audit/linux-build.log"
+          test -s "linux_workdir/$ZIP_NAME"
+          test -s linux_workdir/sysroot-packages.txt
+          cp linux_workdir/sysroot-packages.txt "$GITHUB_WORKSPACE/audit/"
+          sha256sum linux_workdir/db/*.db | tee "$GITHUB_WORKSPACE/audit/arch-arm-database-sha256.txt"
+          sha256sum linux_workdir/"$ZIP_NAME" | tee "$GITHUB_WORKSPACE/audit/helper-package-sha256.txt"
+          ! grep -q 'BL_DRM_STANDIN' linux_workdir/src/src/panfrost/vulkan/panvk_physical_device.c
+
+      - name: Verify and assemble provenance package
+        if: success()
+        run: |
+          set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/dist/linux-g610"
+          mkdir -p "$OUT"
+          unzip -q "dd-build-tools/linux_workdir/$ZIP_NAME" -d "$OUT"
+          test -s "$OUT/libvulkan_panfrost.so"
+          test -s "$OUT/panfrost_icd.aarch64.json"
+          aarch64-linux-gnu-readelf -h "$OUT/libvulkan_panfrost.so" | tee audit/linux-elf-header.txt
+          grep -q 'Class:.*ELF64' audit/linux-elf-header.txt
+          grep -q 'Machine:.*AArch64' audit/linux-elf-header.txt
+          aarch64-linux-gnu-readelf -d "$OUT/libvulkan_panfrost.so" | tee audit/linux-dynamic-section.txt
+          grep -q 'Shared library: \[libc.so.6\]' audit/linux-dynamic-section.txt
+          if grep -Eq 'lib(log|nativewindow|hardware)\.so' audit/linux-dynamic-section.txt; then
+            echo "Linux ICD unexpectedly links Android platform libraries" >&2
+            exit 1
+          fi
+          if grep -q 'BL_DRM_STANDIN' dd-build-tools/linux_workdir/src/src/panfrost/vulkan/panvk_physical_device.c; then
+            echo "Fake DRM stand-in marker found in Linux source" >&2
+            exit 1
+          fi
+          python3 - "$OUT/build-manifest.json" "$OUT/meta.json" "$OUT/libvulkan_panfrost.so" <<'PY'
+          import hashlib, json, os, sys
+          manifest_path, meta_path, library_path = sys.argv[1:]
+          def sha(path):
+            h = hashlib.sha256()
+            with open(path, 'rb') as f:
+              for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                h.update(chunk)
+            return h.hexdigest()
+          meta = json.load(open(meta_path, encoding='utf-8'))
+          data = {
+            "schemaVersion": 1,
+            "artifact": "PanVK-Mali-G610-Linux-glibc-experimental",
+            "status": "built-not-device-validated",
+            "sourceRepository": os.environ["PANVK_SOURCE_REPO"],
+            "sourceCommit": os.environ["PANVK_SOURCE_REF"],
+            "mesaCommit": os.environ["MESA_COMMIT"],
+            "mesaDesktopOverlayRef": os.environ["MESA_OVERLAY_REF"],
+            "profile": os.environ["PANVK_PROFILE"],
+            "profilePatchSeriesId": os.environ["PROFILE_PATCH_SERIES_ID"],
+            "helperRepository": os.environ["DROIDDECK_BUILD_TOOLS_REPO"],
+            "helperCommit": os.environ["DROIDDECK_BUILD_TOOLS_REF"],
+            "helperOriginalSha256": open("audit/linux-helper-original.sha256").read().split()[0],
+            "helperEffectiveSha256": open("audit/linux-helper-effective.sha256").read().split()[0],
+            "sysrootPackageListSha256": sha("audit/sysroot-packages.txt"),
+            "sysrootRepositoryDatabasesSha256": sha("audit/arch-arm-database-sha256.txt"),
+            "abi": "aarch64-linux-gnu",
+            "libc": "glibc",
+            "minimumGlibc": meta.get("minGlibc"),
+            "kernelInterface": "mali_kbase",
+            "panfrostKmds": "kbase",
+            "drmStandIn": False,
+            "library": {
+              "name": "libvulkan_panfrost.so",
+              "sha256": sha(library_path)
+            },
+            "deviceValidation": "not-run",
+            "limitations": [
+              "Linux/glibc ICD only; no Android Bionic ICD included",
+              "No Mali-G610 device runtime or Vulkan conformance validation is claimed",
+              "No DRM render-node emulation or VK_EXT_physical_device_drm stand-in is included",
+              "Wayland/X11 WSI build success does not establish runtime presentation compatibility"
+            ],
+            "helperMeta": meta,
+            "workflowRunId": os.environ.get("GITHUB_RUN_ID")
+          }
+          with open(manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+          PY
+          (cd "$OUT" && find . -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt && sha256sum -c SHA256SUMS.txt)
+          (cd "$OUT" && zip -qr -9 "$GITHUB_WORKSPACE/dist/PanVK-Mali-G610-Linux-glibc-experimental.zip" .)
+          unzip -Z1 "$GITHUB_WORKSPACE/dist/PanVK-Mali-G610-Linux-glibc-experimental.zip" | grep -Fx "libvulkan_panfrost.so"
+          unzip -Z1 "$GITHUB_WORKSPACE/dist/PanVK-Mali-G610-Linux-glibc-experimental.zip" | grep -Fx "build-manifest.json"
+          sha256sum "$GITHUB_WORKSPACE/dist/PanVK-Mali-G610-Linux-glibc-experimental.zip" | tee audit/linux-package-sha256.txt
+          df -h | tee audit/disk-after-build.txt
+
+      - name: Upload Linux build artifact and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: panvk-mali-g610-linux-glibc-experimental
+          path: |
+            dist/
+            audit/
+            dd-build-tools/linux_workdir/build-linux/meson-logs/meson-log.txt
+            dd-build-tools/linux_workdir/src/build-host/meson-logs/meson-log.txt
+          if-no-files-found: warn
+          retention-days: 30
