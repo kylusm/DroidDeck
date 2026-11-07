@@ -184,7 +184,7 @@ jobs:
         run: |
           set -euo pipefail
           OUT="$GITHUB_WORKSPACE/dist/android-g610"
-          cp android_deps/*.so "$OUT/"
+          cp "$GITHUB_WORKSPACE"/android_deps/*.so "$OUT/"
           OVERLAY_SHA="$(awk '{print $1}' "$GITHUB_WORKSPACE/audit/android-overlay-sha256.txt")"
           LIB_SHA="$(sha256sum "$OUT/libvulkan_panfrost.so" | awk '{print $1}')"
           NDK_REV="$(sed -n 's/^Pkg.Revision[[:space:]]*=[[:space:]]*//p' "$ANDROID_NDK_HOME/source.properties" | head -n1)"
