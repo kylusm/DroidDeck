@@ -120,8 +120,8 @@ jobs:
           if sum(line.strip() == marker for line in lines) != 1:
               raise SystemExit("apply_panvk_fixes function shape changed")
           index = next(i for i, line in enumerate(lines) if line.strip() == marker)
-          lines.insert(index + 1, '\tlog "intentionally skipping fake DRM-node / BL_DRM_STANDIN injection"')
-          p.write_text("\\n".join(lines) + "\\n")
+          lines.insert(index + 1, '\tlog "intentionally skipping fake DRM-node metadata injection"')
+          p.write_text("\n".join(lines) + "\n")
           PY
           sha256sum "$SCRIPT" | tee "$GITHUB_WORKSPACE/audit/linux-helper-effective.sha256"
           ! grep -q 'panvk_kbase_drm_node.py' "$SCRIPT"
