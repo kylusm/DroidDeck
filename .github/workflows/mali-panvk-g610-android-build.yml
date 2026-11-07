@@ -169,7 +169,10 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/dist/android-g610"
           cp build-android/src/panfrost/vulkan/libvulkan_panfrost.so "$GITHUB_WORKSPACE/dist/android-g610/"
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"             "$GITHUB_WORKSPACE/dist/android-g610/libvulkan_panfrost.so"
+          # Package dependencies beside the ICD and remove the build-tree RUNPATH.
+          patchelf --set-rpath '$ORIGIN' "$GITHUB_WORKSPACE/dist/android-g610/libvulkan_panfrost.so"
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d             "$GITHUB_WORKSPACE/dist/android-g610/libvulkan_panfrost.so"             | tee "$GITHUB_WORKSPACE/audit/android-needed.txt"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d "$GITHUB_WORKSPACE/dist/android-g610/libvulkan_panfrost.so" | grep -F 'Library runpath: [$ORIGIN]'
           file "$GITHUB_WORKSPACE/dist/android-g610/libvulkan_panfrost.so"             | tee "$GITHUB_WORKSPACE/audit/android-file.txt"
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" -D             "$GITHUB_WORKSPACE/dist/android-g610/libvulkan_panfrost.so"             | grep -E 'vk_icdGetInstanceProcAddr|vk_icdNegotiateLoaderICDInterfaceVersion'             | tee "$GITHUB_WORKSPACE/audit/android-icd-exports.txt"
           if "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d               "$GITHUB_WORKSPACE/dist/android-g610/libvulkan_panfrost.so" | grep -q 'libc.so.6'; then
@@ -189,8 +192,16 @@ jobs:
           LIB_SHA="$(sha256sum "$OUT/libvulkan_panfrost.so" | awk '{print $1}')"
           NDK_REV="$(sed -n 's/^Pkg.Revision[[:space:]]*=[[:space:]]*//p' "$ANDROID_NDK_HOME/source.properties" | head -n1)"
           python3 - "$OUT/build-manifest.json" "$LIB_SHA" "$OVERLAY_SHA" "$NDK_REV" <<'PY'
-          import json, os, sys
+          import glob, hashlib, json, os, sys
           out, lib_sha, overlay_sha, ndk_rev = sys.argv[1:]
+          out_dir = os.path.dirname(out)
+          dependencies = []
+          for path in sorted(glob.glob(os.path.join(out_dir, '*.so'))):
+            if os.path.basename(path) == 'libvulkan_panfrost.so':
+              continue
+            with open(path, 'rb') as stream:
+              digest = hashlib.sha256(stream.read()).hexdigest()
+            dependencies.append({'name': os.path.basename(path), 'sha256': digest})
           data = {
             "schemaVersion": 1,
             "artifact": "PanVK-Mali-G610-Android-experimental",
@@ -221,8 +232,10 @@ jobs:
             ],
             "library": {
               "name": "libvulkan_panfrost.so",
-              "sha256": lib_sha
+              "sha256": lib_sha,
+              "runpath": "$ORIGIN"
             },
+            "dependencies": dependencies,
             "deviceValidation": "not-run",
             "limitations": [
               "Android ICD only; no Linux/glibc runtime half was built",
@@ -234,7 +247,7 @@ jobs:
           json.dump(data, open(out, "w", encoding="utf-8"), indent=2)
           open(out, "a", encoding="utf-8").write("\n")
           PY
-          (cd "$OUT" && sha256sum libvulkan_panfrost.so deps/*.so build-manifest.json > SHA256SUMS.txt)
+          (cd "$OUT" && sha256sum ./*.so build-manifest.json > SHA256SUMS.txt)
           (cd "$GITHUB_WORKSPACE" && zip -qr -9 dist/PanVK-Mali-G610-Android-experimental.zip dist/android-g610)
           sha256sum "$GITHUB_WORKSPACE/dist/PanVK-Mali-G610-Android-experimental.zip"             | tee "$GITHUB_WORKSPACE/audit/package-sha256.txt"
           df -h | tee "$GITHUB_WORKSPACE/audit/disk-after-build.txt"
