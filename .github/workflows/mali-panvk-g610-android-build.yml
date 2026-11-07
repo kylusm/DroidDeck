@@ -247,8 +247,10 @@ jobs:
           json.dump(data, open(out, "w", encoding="utf-8"), indent=2)
           open(out, "a", encoding="utf-8").write("\n")
           PY
-          (cd "$OUT" && sha256sum ./*.so build-manifest.json > SHA256SUMS.txt)
-          (cd "$GITHUB_WORKSPACE" && zip -qr -9 dist/PanVK-Mali-G610-Android-experimental.zip dist/android-g610)
+          (cd "$OUT" && sha256sum ./*.so build-manifest.json > SHA256SUMS.txt && sha256sum -c SHA256SUMS.txt)
+          (cd "$OUT" && zip -qr -9 "$GITHUB_WORKSPACE/dist/PanVK-Mali-G610-Android-experimental.zip" .)
+          unzip -Z1 "$GITHUB_WORKSPACE/dist/PanVK-Mali-G610-Android-experimental.zip" | grep -Fx "libvulkan_panfrost.so"
+          unzip -Z1 "$GITHUB_WORKSPACE/dist/PanVK-Mali-G610-Android-experimental.zip" | grep -Fx "build-manifest.json"
           sha256sum "$GITHUB_WORKSPACE/dist/PanVK-Mali-G610-Android-experimental.zip"             | tee "$GITHUB_WORKSPACE/audit/package-sha256.txt"
           df -h | tee "$GITHUB_WORKSPACE/audit/disk-after-build.txt"
 
