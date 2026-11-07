@@ -84,7 +84,7 @@ jobs:
           }
           test "$(git -C panvk-source rev-parse HEAD)" = "$PANVK_SOURCE_REF"
           test "$(git -C dd-build-tools rev-parse HEAD)" = "$DROIDDECK_BUILD_TOOLS_REF"
-          python3 panvk-source/tools/panvk_profile_patch_digest.py --root panvk-source --profile "$PANVK_PROFILE" | tee audit/profile-patch-digest.txt
+          python3 tools/panvk_profile_patch_digest.py --root panvk-source --profile "$PANVK_PROFILE" | tee audit/profile-patch-digest.txt
           grep -Fx "$PROFILE_PATCH_SERIES_ID" audit/profile-patch-digest.txt
           {
             echo "runner=$(uname -a)"
